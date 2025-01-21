@@ -15,4 +15,11 @@
 vendor/
 
 # Go workspace file
-go.work 
+go.work
+
+# IDE's
+.idea/
+.code/
+
+# MongoDB data dir
+data/

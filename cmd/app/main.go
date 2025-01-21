@@ -2,75 +2,58 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"github.com/labstack/echo/v4"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"log"
-	"net/http"
+	"log/slog"
+	"my-go-project/internal/api"
+	"my-go-project/internal/service"
 	"os"
 	"time"
-
-	"my-go-project/internal/models"
-
-	"github.com/gorilla/mux"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-var client *mongo.Client
-var collection *mongo.Collection
-
 func main() {
+	const database = "userdb"
+
 	// Set up MongoDB connection
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	
+
 	// Get MongoDB URI from environment variable or use default
 	mongoURI := getEnv("MONGODB_URI", "mongodb://localhost:27017")
 	clientOptions := options.Client().ApplyURI(mongoURI)
 	var err error
-	client, err = mongo.Connect(ctx, clientOptions)
+	client, err := mongo.Connect(clientOptions)
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
-	defer client.Disconnect(ctx)
+	defer func(client *mongo.Client, ctx context.Context) {
+		err := client.Disconnect(ctx)
+		if err != nil {
+			slog.Error("Failed to disconnect from MongoDB", "error", err)
+		}
+	}(client, ctx)
 
 	// Wait for MongoDB to be ready
 	err = waitForMongo(client, ctx)
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
 
-	// Initialize collection
-	collection = client.Database("assetsdb").Collection("assets")
+	userService := service.NewUserService(client.Database(database))
 
-	// Set up router
-	r := mux.NewRouter()
-	r.HandleFunc("/assets", getAssets).Methods("GET")
+	// Initialize echo
+	e := echo.New()
+	// Setup API routes
+	e.GET("/users", api.GetUsers(userService))
+	// TODO add more routes
 
 	// Start server
-	log.Println("Server starting on port 8080...")
-	log.Fatal(http.ListenAndServe(":8080", r))
-}
-
-func getAssets(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	var assets []models.Asset
-	cursor, err := collection.Find(ctx, map[string]interface{}{})
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer cursor.Close(ctx)
-
-	if err = cursor.All(ctx, &assets); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(assets)
+	port := getEnv("PORT", "8888")
+	slog.Info("Server starting...", "port", port)
+	log.Fatal(e.Start(fmt.Sprintf(":%s", port)))
 }
 
 // Helper function to get environment variables
@@ -92,11 +75,11 @@ func waitForMongo(client *mongo.Client, ctx context.Context) error {
 			log.Println("Successfully connected to MongoDB!")
 			return nil
 		}
-		
+
 		retries++
 		log.Printf("Waiting for MongoDB... (%d/%d)\n", retries, maxRetries)
 		time.Sleep(time.Second)
 	}
 
 	return fmt.Errorf("could not connect to MongoDB after %d retries", maxRetries)
-} 
+}
