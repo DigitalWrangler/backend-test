@@ -67,6 +67,21 @@ If you want, you can also implement any or all of the following tasks:
 
 Make it possible for the API client to sort the users by name, email, or age.
 
+### Calculate age
+
+The users have a birth date field (YYYY-MM-DD). We need to keep the birth date in the database, but we want to have an `age` field exposed through the api that is automatically calculated from the birth date.
+
+Example:
+````json
+{
+  "name": "John Doe",
+  "email": "john.doe@example.com",
+  "birth": "2001-05-03",
+  "age": 23,
+  "city": "New York"
+}
+````
+
 ### Update user
 
 Create a rest endpoint that allows updating a user.
