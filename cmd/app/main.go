@@ -3,83 +3,94 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/labstack/echo/v4"
-	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"log"
-	"log/slog"
-	"my-go-project/internal/api"
-	"my-go-project/internal/service"
 	"os"
 	"time"
+
+	"my-go-project/internal/api"
+	"my-go-project/internal/service"
+
+	"github.com/labstack/echo/v4"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 func main() {
 	const database = "userdb"
 
-	// Set up MongoDB connection
+	// Set up MongoDB connection with context timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Get MongoDB URI from environment variable or use default
-	mongoURI := getEnv("MONGODB_URI", "mongodb://localhost:27017")
+	// Get MongoDB URI from environment variable or use default with authentication
+	mongoURI := getEnv("MONGODB_URI", "mongodb://root:gotest@localhost:27017/userdb?authSource=admin")
+
+	// Set up client options for MongoDB connection
 	clientOptions := options.Client().ApplyURI(mongoURI)
-	var err error
-	client, err := mongo.Connect(clientOptions)
+
+	// Create MongoDB client
+	client, err := mongo.Connect(ctx, clientOptions)
 	if err != nil {
-		panic(err)
+		log.Fatalf("Failed to connect to MongoDB: %v", err)
 	}
-	defer func(client *mongo.Client, ctx context.Context) {
-		err := client.Disconnect(ctx)
-		if err != nil {
-			slog.Error("Failed to disconnect from MongoDB", "error", err)
+	defer func() {
+		// Disconnect MongoDB client on application shutdown
+		if err := client.Disconnect(ctx); err != nil {
+			log.Println("Failed to disconnect from MongoDB:", err)
 		}
-	}(client, ctx)
+	}()
 
-	// Wait for MongoDB to be ready
-	err = waitForMongo(client, ctx)
-	if err != nil {
-		panic(err)
+	// Wait for MongoDB to be ready and log connection retries
+	if err := waitForMongo(client, ctx); err != nil {
+		log.Fatalf("MongoDB connection failed: %v", err)
 	}
 
+	// Initialize UserService with the connected MongoDB client
 	userService := service.NewUserService(client.Database(database))
 
-	// Initialize echo
+	// Initialize Echo web framework for the server
 	e := echo.New()
-	// Setup API routes
-	e.GET("/users", api.GetUsers(userService))
-	// TODO add more routes
 
-	// Start server
+	// ROUTES
+	e.GET("/users", api.GetUsers(userService))
+	e.POST("/users", api.CreateUser(userService))
+	e.PUT("/users/:id/deactivate", api.DeactivateUser(userService))
+
+	// Start the server on the defined port
 	port := getEnv("PORT", "8888")
-	slog.Info("Server starting...", "port", port)
-	log.Fatal(e.Start(fmt.Sprintf(":%s", port)))
+	log.Printf("Server starting on port %s...", port)
+	if err := e.Start(fmt.Sprintf(":%s", port)); err != nil {
+		log.Fatalf("Server failed to start: %v", err)
+	}
 }
 
-// Helper function to get environment variables
+// Helper function to get environment variables with a fallback option
 func getEnv(key, fallback string) string {
+	// Check if the environment variable exists and return its value, otherwise return the fallback
 	if value, exists := os.LookupEnv(key); exists {
 		return value
 	}
 	return fallback
 }
 
-// Helper function to wait for MongoDB to be ready
+// Helper function to check MongoDB connection readiness
 func waitForMongo(client *mongo.Client, ctx context.Context) error {
 	retries := 0
 	maxRetries := 30
 
+	// Try to ping MongoDB server up to maxRetries times to ensure it's ready
 	for retries < maxRetries {
-		err := client.Ping(ctx, nil)
+		err := client.Ping(ctx, nil) // Ping the MongoDB server to check connectivity
 		if err == nil {
 			log.Println("Successfully connected to MongoDB!")
 			return nil
 		}
 
 		retries++
-		log.Printf("Waiting for MongoDB... (%d/%d)\n", retries, maxRetries)
-		time.Sleep(time.Second)
+		log.Printf("MongoDB not ready yet, retrying (%d/%d)... Error: %v", retries, maxRetries, err)
+		time.Sleep(time.Second) // Wait before retrying
 	}
 
+	// Return an error if MongoDB connection could not be established after max retries
 	return fmt.Errorf("could not connect to MongoDB after %d retries", maxRetries)
 }
